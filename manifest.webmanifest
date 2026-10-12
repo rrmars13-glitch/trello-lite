@@ -1,0 +1,14 @@
+{
+  "name": "Trello Lite",
+  "short_name": "Trello Lite",
+  "description": "Простая доска задач с колонками и цветами важности",
+  "lang": "ru",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#e9eef6",
+  "theme_color": "#1f6feb",
+  "icons": [
+    { "src": "icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }
+  ]
+}

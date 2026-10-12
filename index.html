@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Trello Lite</title>
+  <meta name="theme-color" content="#1f6feb">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="icon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body class="is-auth">
+  <!-- Экран входа -->
+  <section class="auth" id="authScreen">
+    <form class="auth-box" id="loginForm">
+      <img src="icon.svg" alt="" width="48" height="48">
+      <h1>Trello Lite</h1>
+      <p class="muted" id="authHint">Войдите, чтобы открыть доску</p>
+      <label>Почта
+        <input type="email" id="loginEmail" autocomplete="username" required>
+      </label>
+      <label>Пароль
+        <input type="password" id="loginPassword" autocomplete="current-password" required>
+      </label>
+      <button type="submit" class="primary-btn" id="loginButton">Войти</button>
+      <p class="auth-error" id="loginError" hidden></p>
+    </form>
+  </section>
+
+  <!-- Доска -->
+  <header class="topbar">
+    <div class="brand">
+      <img src="icon.svg" alt="" width="24" height="24">
+      <span>Trello Lite</span>
+    </div>
+
+    <div class="filter" role="group" aria-label="Фильтр по важности">
+      <span class="filter-label">Показать:</span>
+      <button type="button" class="chip is-active" data-filter="all">Все</button>
+      <button type="button" class="chip" data-filter="urgent"><i class="dot p-urgent"></i>Срочно</button>
+      <button type="button" class="chip" data-filter="high"><i class="dot p-high"></i>Высокая</button>
+      <button type="button" class="chip" data-filter="medium"><i class="dot p-medium"></i>Средняя</button>
+      <button type="button" class="chip" data-filter="low"><i class="dot p-low"></i>Низкая</button>
+      <button type="button" class="chip" data-filter="none"><i class="dot p-none"></i>Без важности</button>
+    </div>
+
+    <div class="sync" id="sync" data-state="connecting" title="Состояние синхронизации">
+      <i class="sync-dot"></i><span class="sync-text">Подключение…</span>
+    </div>
+    <button type="button" class="link-btn" id="logoutButton" title="">Выйти</button>
+  </header>
+
+  <div class="offline-banner" id="offlineBanner" hidden>
+    Нет связи с облаком. Доска показана только для просмотра — изменения можно будет вносить, когда интернет вернётся.
+  </div>
+
+  <main class="board" id="board" aria-live="polite"></main>
+
+  <dialog class="modal" id="cardModal">
+    <form method="dialog" class="modal-body" id="cardForm">
+      <div class="modal-head">
+        <textarea id="cardTitle" class="card-title-input" rows="1" maxlength="300" aria-label="Название задачи"></textarea>
+        <button type="submit" class="icon-btn" aria-label="Закрыть">✕</button>
+      </div>
+      <p class="modal-sub">в колонке
+        <select id="cardColumn" aria-label="Колонка"></select>
+      </p>
+
+      <h3>Важность</h3>
+      <div class="priority-picker" id="cardPriority">
+        <button type="button" data-priority="none"><i class="dot p-none"></i>Без важности</button>
+        <button type="button" data-priority="low"><i class="dot p-low"></i>Низкая</button>
+        <button type="button" data-priority="medium"><i class="dot p-medium"></i>Средняя</button>
+        <button type="button" data-priority="high"><i class="dot p-high"></i>Высокая</button>
+        <button type="button" data-priority="urgent"><i class="dot p-urgent"></i>Срочно</button>
+      </div>
+
+      <h3>Описание</h3>
+      <textarea id="cardDescription" class="description-input" rows="6" maxlength="10000" placeholder="Подробности задачи…"></textarea>
+
+      <div class="modal-foot">
+        <span class="muted" id="cardMeta"></span>
+        <button type="button" class="danger-btn" id="cardDelete">Удалить задачу</button>
+      </div>
+    </form>
+  </dialog>
+
+  <div class="toast" id="toast" role="status" hidden></div>
+
+  <script src="config.js"></script>
+  <script src="vendor/supabase.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
