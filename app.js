@@ -129,10 +129,20 @@ function isNetworkError(err) {
   return /fetch|network|load failed|timeout/i.test(`${err?.message || err}`);
 }
 
+const SCHEMA_HINT = 'Обновите базу: выполните заново supabase/schema.sql в Supabase → SQL Editor';
+
 function describeError(err) {
+  const message = err?.message || `${err}`;
   if (isNetworkError(err)) return 'Нет связи с облаком — изменение не сохранено';
-  if (/jwt|token|auth/i.test(err?.message || '')) return 'Сессия истекла — войдите заново';
-  return `Ошибка: ${err?.message || err}`;
+  if (/bucket not found|attachments/i.test(message)) return SCHEMA_HINT;
+  if (/jwt|token|auth/i.test(message)) return 'Сессия истекла — войдите заново';
+  return `Ошибка: ${message}`;
+}
+
+// Удаляет файлы вложений из хранилища. Без ожидания: если не получится, останется лишь «мусор» в хранилище.
+function removeFiles(paths) {
+  if (!paths.length) return;
+  sb.storage.from('attachments').remove(paths).catch(() => {});
 }
 
 function buildBoard(columnRows, cardRows) {
@@ -149,6 +159,7 @@ function buildBoard(columnRows, cardRows) {
       description: r.description,
       priority: r.priority,
       position: r.position,
+      attachments: Array.isArray(r.attachments) ? r.attachments : [],
       createdAt: r.created_at,
       updatedAt: r.updated_at,
     };
@@ -157,13 +168,22 @@ function buildBoard(columnRows, cardRows) {
   return { columns, cards };
 }
 
+const CARD_FIELDS = 'id,column_id,title,description,priority,position,created_at,updated_at';
+let schemaOutdated = false; // в базе ещё нет колонки для вложений
+
 async function fetchBoard() {
-  const [cols, cards] = await Promise.all([
+  const selectCards = () => sb.from('cards')
+    .select(schemaOutdated ? CARD_FIELDS : `${CARD_FIELDS},attachments`)
+    .order('position').order('created_at');
+  let [cols, cards] = await Promise.all([
     sb.from('columns').select('id,title,position').order('position').order('created_at'),
-    sb.from('cards')
-      .select('id,column_id,title,description,priority,position,created_at,updated_at')
-      .order('position').order('created_at'),
+    selectCards(),
   ]);
+  if (cards.error && !schemaOutdated && /attachments/i.test(cards.error.message || '')) {
+    schemaOutdated = true;
+    toast(SCHEMA_HINT);
+    cards = await selectCards();
+  }
   if (cols.error) throw cols.error;
   if (cards.error) throw cards.error;
   return buildBoard(cols.data, cards.data);
@@ -227,10 +247,19 @@ async function createDefaultColumns() {
   if (error) throw error;
 }
 
-// Записывает изменение в облако. Если не получилось — показываем ошибку
-// и перечитываем доску, чтобы откатить изменение на экране.
-async function send(request) {
+// Записывает изменение в облако. Записи уходят строго по очереди: иначе два быстрых изменения
+// одной карточки (например, два прикреплённых подряд файла) могли бы дойти в обратном порядке.
+// Если запись не удалась — показываем ошибку и перечитываем доску, чтобы откатить изменение на экране.
+let writeQueue = Promise.resolve();
+
+function send(request) {
   state.pending += 1;
+  const result = writeQueue.then(() => performWrite(request));
+  writeQueue = result;
+  return result;
+}
+
+async function performWrite(request) {
   let failed = false;
   try {
     const result = await request();
@@ -244,6 +273,7 @@ async function send(request) {
     state.writeSeq += 1;
     scheduleReload(failed ? 0 : 400);
   }
+  return !failed;
 }
 
 function setOnline(online) {
@@ -373,10 +403,11 @@ function updateCard(cardId, patch) {
 
 function deleteCard(cardId) {
   const col = columnOfCard(cardId);
+  const paths = attachmentsOf(state.board.cards[cardId]).map((a) => a.path);
   if (col) col.cardIds = col.cardIds.filter((id) => id !== cardId);
   delete state.board.cards[cardId];
   render();
-  send(() => sb.from('cards').delete().eq('id', cardId));
+  send(() => sb.from('cards').delete().eq('id', cardId)).then((ok) => ok && removeFiles(paths));
 }
 
 function addColumn(title) {
@@ -400,12 +431,13 @@ function deleteColumn(columnId) {
   if (!col) return;
   const count = col.cardIds.length;
   if (count && !confirm(`Удалить колонку «${col.title}» вместе с задачами (${pluralTasks(count)})?`)) return;
+  const paths = col.cardIds.flatMap((id) => attachmentsOf(state.board.cards[id]).map((a) => a.path));
   for (const id of col.cardIds) delete state.board.cards[id];
   state.board.columns = state.board.columns.filter((c) => c.id !== columnId);
   if (state.composer?.columnId === columnId) state.composer = null;
   render();
-  // Карточки колонки база удалит сама (on delete cascade).
-  send(() => sb.from('columns').delete().eq('id', columnId));
+  // Карточки колонки база удалит сама (on delete cascade), файлы вложений — убираем мы.
+  send(() => sb.from('columns').delete().eq('id', columnId)).then((ok) => ok && removeFiles(paths));
 }
 
 // ---------- Вход и выход ----------
@@ -438,6 +470,8 @@ function onSignedOut() {
   storageRemove(cacheKey());
   unsubscribe();
   cancelDrag();
+  descDirty = false; // после выхода сохранять нечего и некуда
+  state.openCardId = null;
   if (modal.open) modal.close();
   Object.assign(state, {
     user: null, board: null, queuedBoard: null, online: null,
@@ -561,7 +595,8 @@ function renderColumn(col) {
 }
 
 function renderCard(card) {
-  const hasDescription = card.description && card.description.trim();
+  const hasDescription = descriptionHasContent(card.description);
+  const attachmentCount = attachmentsOf(card).length;
   return h('article', {
     class: `card p-${card.priority}`, tabindex: 0, dataset: { id: card.id },
   },
@@ -573,6 +608,7 @@ function renderCard(card) {
     h('div', { class: 'card-title' }, card.title),
     h('div', { class: 'card-meta' },
       hasDescription ? h('span', { title: 'Есть описание' }, '☰ описание') : null,
+      attachmentCount ? h('span', { title: 'Вложения' }, `📎 ${attachmentCount}`) : null,
     ),
   );
 }
@@ -1030,21 +1066,352 @@ function cleanupDrag() {
 // ---------- Окно задачи ----------
 
 const titleInput = $('#cardTitle');
-const descriptionInput = $('#cardDescription');
 const columnSelect = $('#cardColumn');
 const priorityPicker = $('#cardPriority');
+const descBox = $('#desc');
+const attachmentList = $('#attachmentList');
+const attachInput = $('#attachInput');
+
+const BUCKET = 'attachments';
+const MAX_FILE_SIZE = 50 * 1024 * 1024;
+const MAX_DESCRIPTION = 200000;
+const IMAGE_TYPES = ['image/png', 'image/jpeg', 'image/gif', 'image/webp'];
+const INLINE_IMAGE_TTL = 60 * 60 * 24 * 365 * 10; // картинки в описании открываются по ссылке, живущей 10 лет
 
 function autosizeTitle() {
   titleInput.style.height = 'auto';
   titleInput.style.height = `${titleInput.scrollHeight}px`;
 }
 
+function escapeHtml(text) {
+  return text.replace(/[&<>"]/g, (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[ch]));
+}
+
+function attachmentsOf(card) {
+  return Array.isArray(card?.attachments) ? card.attachments : [];
+}
+
+// Есть ли в описании что-то кроме пустых тегов (для значка на карточке).
+function descriptionHasContent(value) {
+  if (!value) return false;
+  if (!/^\s*</.test(value)) return value.trim() !== '';
+  return /<img/i.test(value) || value.replace(/<[^>]*>/g, '').replace(/&nbsp;/g, ' ').trim() !== '';
+}
+
+function formatSize(bytes) {
+  if (!Number.isFinite(bytes)) return '';
+  if (bytes < 1024) return `${bytes} Б`;
+  if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} КБ`;
+  return `${(bytes / 1024 / 1024).toFixed(1).replace('.', ',')} МБ`;
+}
+
+// ---------- Описание: редактор с форматированием ----------
+
+const quill = new Quill('#descEditor', {
+  theme: 'snow',
+  placeholder: 'Добавьте подробное описание…',
+  readOnly: true,
+  modules: {
+    toolbar: { container: '#descToolbar', handlers: { image: pickInlineImage } },
+    uploader: { mimetypes: IMAGE_TYPES, handler: uploadInlineImages },
+  },
+});
+
+let descEditing = false;
+let descDirty = false;
+let descLoaded = '';   // описание карточки, загруженное в редактор
+
+quill.on('text-change', () => { if (descEditing) descDirty = true; });
+
+// Кнопки панели не должны забирать фокус у текста — иначе, например, повторное нажатие «Ж»
+// не выключает жирный для следующих букв.
+$('#descToolbar').addEventListener('mousedown', (e) => {
+  if (e.target.closest('button')) e.preventDefault();
+});
+
+// Старые описания были простым текстом — превращаем их в абзацы.
+function toEditorHtml(value) {
+  if (!value) return '';
+  if (/^\s*</.test(value)) return value;
+  return value.split('\n').map((line) => `<p>${escapeHtml(line) || '<br>'}</p>`).join('');
+}
+
+function isDescriptionEmpty() {
+  return quill.getText().trim() === '' && !quill.root.querySelector('img');
+}
+
+function loadDescription(value) {
+  descLoaded = value || '';
+  const html = toEditorHtml(descLoaded);
+  quill.setContents(html ? quill.clipboard.convert({ html }) : [], 'silent');
+  quill.history.clear();
+  descBox.classList.toggle('is-empty', isDescriptionEmpty());
+}
+
+function startEditDescription() {
+  if (descEditing || !state.online || !state.openCardId) return;
+  descEditing = true;
+  descDirty = false;
+  descBox.classList.remove('is-view', 'is-empty');
+  quill.enable(true);
+  quill.focus();
+  quill.setSelection(quill.getLength(), 0, 'silent');
+}
+
+function stopEditDescription() {
+  descEditing = false;
+  quill.enable(false);
+  quill.theme.tooltip?.hide();
+  descBox.classList.add('is-view');
+  descBox.classList.toggle('is-empty', isDescriptionEmpty());
+}
+
+function saveDescription() {
+  const card = state.board?.cards[state.openCardId];
+  if (card && descDirty && state.online) {
+    const html = isDescriptionEmpty() ? '' : quill.root.innerHTML;
+    if (html.length > MAX_DESCRIPTION) {
+      toast('Описание слишком длинное — сократите текст или уберите часть картинок');
+      return;
+    }
+    if (html !== (card.description || '')) updateCard(card.id, { description: html });
+    descLoaded = html;
+  }
+  stopEditDescription();
+}
+
+function cancelDescription() {
+  loadDescription(state.board?.cards[state.openCardId]?.description);
+  stopEditDescription();
+}
+
+// Клик по тексту описания открывает редактор (кнопки «Сохранить»/«Отмена» сюда не относятся).
+quill.container.addEventListener('click', (e) => {
+  if (!descBox.classList.contains('is-view') || e.target.closest('a')) return;
+  startEditDescription();
+});
+descBox.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' && (e.ctrlKey || e.metaKey) && descEditing) {
+    e.preventDefault();
+    saveDescription();
+  }
+}, true);
+$('#descSave').addEventListener('click', saveDescription);
+$('#descCancel').addEventListener('click', cancelDescription);
+
+// Кнопка «картинка»: выбрать файл на компьютере.
+function pickInlineImage() {
+  const input = h('input', { type: 'file', accept: IMAGE_TYPES.join(',') });
+  input.addEventListener('change', () => {
+    if (input.files.length) uploadInlineImages(quill.getSelection(true), [...input.files]);
+  });
+  input.click();
+}
+
+// Картинки (кнопкой, перетаскиванием или Ctrl+V в текст) загружаются во вложения
+// и вставляются в описание.
+async function uploadInlineImages(range, files) {
+  const cardId = state.openCardId;
+  let index = range ? range.index : quill.getLength();
+  for (const file of files) {
+    const att = await uploadAttachment(cardId, file);
+    if (!att) continue;
+    const { data, error } = await sb.storage.from(BUCKET).createSignedUrl(att.path, INLINE_IMAGE_TTL);
+    if (error || !data) { toast(describeError(error)); continue; }
+    if (state.openCardId !== cardId || !descEditing) continue; // окно закрыли — картинка осталась во вложениях
+    quill.insertEmbed(index, 'image', data.signedUrl, 'user');
+    index += 1;
+    quill.setSelection(index, 0, 'silent');
+  }
+}
+
+// ---------- Вложения ----------
+
+const uploading = new Map();   // id → { cardId, name } — файлы, которые сейчас загружаются
+const thumbCache = new Map();  // путь → { url, expires } — временные ссылки на превью картинок
+let thumbsLoading = false;
+
+function safeExtension(name) {
+  const m = /\.([a-z0-9]{1,10})$/i.exec(name || '');
+  return m ? `.${m[1].toLowerCase()}` : '';
+}
+
+async function uploadAttachment(cardId, file) {
+  if (!state.online) { toast('Нет связи — файл не загружен'); return null; }
+  if (file.size > MAX_FILE_SIZE) { toast(`Файл «${file.name}» больше 50 МБ`); return null; }
+  const id = uuid();
+  const name = file.name || 'файл';
+  // В пути только латиница: хранилище не принимает русские имена файлов. Настоящее имя — в карточке.
+  const path = `${state.user.id}/${cardId}/${id}${safeExtension(name)}`;
+  uploading.set(id, { cardId, name });
+  renderAttachments();
+  try {
+    const { error } = await sb.storage.from(BUCKET).upload(path, file, {
+      contentType: file.type || 'application/octet-stream', upsert: false,
+    });
+    if (error) throw error;
+  } catch (err) {
+    toast(`Не удалось загрузить «${name}»: ${describeError(err)}`);
+    return null;
+  } finally {
+    uploading.delete(id);
+    renderAttachments();
+  }
+  const card = state.board?.cards[cardId];
+  if (!card) { removeFiles([path]); return null; } // карточку удалили, пока шла загрузка
+  const att = { id, name, path, size: file.size, type: file.type || '', createdAt: new Date().toISOString() };
+  updateCard(cardId, { attachments: [...attachmentsOf(card), att] });
+  renderAttachments();
+  return att;
+}
+
+async function attachFiles(files) {
+  const cardId = state.openCardId;
+  for (const file of files) await uploadAttachment(cardId, file);
+}
+
+function renderAttachments() {
+  const card = state.board?.cards[state.openCardId];
+  const items = [...attachmentsOf(card)].reverse(); // новые сверху
+  const pending = [...uploading.values()].filter((u) => u.cardId === state.openCardId);
+  attachmentList.replaceChildren(
+    ...pending.map((u) => h('li', { class: 'attachment is-uploading' },
+      h('div', { class: 'att-thumb' }, '…'),
+      h('div', { class: 'att-info' },
+        h('div', { class: 'att-name' }, u.name),
+        h('div', { class: 'muted' }, 'Загрузка…'),
+      ),
+    )),
+    ...items.map(renderAttachment),
+  );
+  $('#dropHint').hidden = items.length + pending.length > 0;
+  loadThumbnails(items);
+}
+
+function renderAttachment(att) {
+  const isImage = /^image\//.test(att.type);
+  const url = isImage ? thumbCache.get(att.path)?.url : null;
+  const ext = safeExtension(att.name).slice(1) || 'файл';
+  return h('li', { class: 'attachment', dataset: { id: att.id } },
+    h('button', { type: 'button', class: 'att-thumb', title: 'Открыть', dataset: { action: 'open' } },
+      url ? h('img', { src: url, alt: '' }) : ext),
+    h('div', { class: 'att-info' },
+      h('button', { type: 'button', class: 'att-name', title: 'Открыть', dataset: { action: 'open' } }, att.name),
+      h('div', { class: 'muted' }, [formatSize(att.size), formatDate(att.createdAt)].filter(Boolean).join(' · ')),
+      h('div', { class: 'att-actions' },
+        h('button', { type: 'button', class: 'link-btn', dataset: { action: 'download' } }, 'Скачать'),
+        h('button', { type: 'button', class: 'link-btn danger-link', dataset: { action: 'delete' } }, 'Удалить'),
+      ),
+    ),
+  );
+}
+
+// Превью картинок: временные ссылки на час, одним запросом.
+async function loadThumbnails(items) {
+  const now = Date.now();
+  const need = items
+    .filter((a) => /^image\//.test(a.type) && !(thumbCache.get(a.path)?.expires > now))
+    .map((a) => a.path);
+  if (!need.length || thumbsLoading || !state.online) return;
+  thumbsLoading = true;
+  try {
+    const { data, error } = await sb.storage.from(BUCKET).createSignedUrls(need, 3600);
+    if (error) return;
+    const urls = new Map((data || []).map((d) => [d.path, d.signedUrl]));
+    for (const path of need) thumbCache.set(path, { url: urls.get(path) || null, expires: now + 3300 * 1000 });
+  } finally {
+    thumbsLoading = false;
+  }
+  renderAttachments();
+}
+
+attachmentList.addEventListener('click', async (e) => {
+  const btn = e.target.closest('[data-action]');
+  const card = state.board?.cards[state.openCardId];
+  const att = attachmentsOf(card).find((a) => a.id === btn?.closest('.attachment')?.dataset.id);
+  if (!btn || !att) return;
+  const action = btn.dataset.action;
+
+  if (action === 'open') {
+    const win = window.open('', '_blank'); // открываем сразу, иначе браузер заблокирует окно
+    const { data, error } = await sb.storage.from(BUCKET).createSignedUrl(att.path, 600);
+    if (error || !data) { win?.close(); toast(describeError(error)); return; }
+    if (win) { win.opener = null; win.location.href = data.signedUrl; } else location.assign(data.signedUrl);
+  } else if (action === 'download') {
+    const { data, error } = await sb.storage.from(BUCKET).createSignedUrl(att.path, 600, { download: att.name });
+    if (error || !data) { toast(describeError(error)); return; }
+    const link = h('a', { href: data.signedUrl, download: att.name });
+    document.body.append(link);
+    link.click();
+    link.remove();
+  } else if (action === 'delete') {
+    if (!state.online || !confirm(`Удалить вложение «${att.name}»?`)) return;
+    updateCard(card.id, { attachments: attachmentsOf(card).filter((a) => a.id !== att.id) });
+    removeFiles([att.path]);
+    renderAttachments();
+  }
+});
+
+$('#attachButton').addEventListener('click', () => attachInput.click());
+attachInput.addEventListener('change', () => {
+  const files = [...attachInput.files];
+  attachInput.value = '';
+  if (files.length) attachFiles(files);
+});
+
+// Перетаскивание файлов в окно задачи.
+let dragDepth = 0;
+const hasFiles = (e) => [...(e.dataTransfer?.types || [])].includes('Files');
+
+modal.addEventListener('dragenter', (e) => {
+  if (!hasFiles(e) || !state.online) return;
+  e.preventDefault();
+  dragDepth += 1;
+  modal.classList.add('is-drop');
+});
+modal.addEventListener('dragover', (e) => {
+  if (hasFiles(e) && state.online) e.preventDefault();
+});
+modal.addEventListener('dragleave', (e) => {
+  if (!hasFiles(e)) return;
+  dragDepth = Math.max(0, dragDepth - 1);
+  if (!dragDepth) modal.classList.remove('is-drop');
+});
+modal.addEventListener('drop', (e) => {
+  if (!hasFiles(e)) return;
+  e.preventDefault();
+  dragDepth = 0;
+  modal.classList.remove('is-drop');
+  if (!state.online || !state.openCardId) return;
+  let files = [...e.dataTransfer.files];
+  // Картинки, брошенные прямо в текст, вставляет редактор — остальное прикрепляем.
+  if (descEditing && quill.root.contains(e.target)) files = files.filter((f) => !IMAGE_TYPES.includes(f.type));
+  if (files.length) attachFiles(files);
+});
+
+// Ctrl+V с файлом в буфере обмена.
+modal.addEventListener('paste', (e) => {
+  const files = [...(e.clipboardData?.files || [])];
+  if (!files.length || !state.online || !state.openCardId) return;
+  if (descEditing && quill.root.contains(e.target)) {
+    const other = files.filter((f) => !IMAGE_TYPES.includes(f.type));
+    if (other.length) attachFiles(other);
+    return;
+  }
+  if (e.target.closest?.('input, textarea')) return;
+  e.preventDefault();
+  attachFiles(files);
+});
+
+// ---------- Открытие и синхронизация окна ----------
+
 function openCard(cardId) {
   const card = state.board?.cards[cardId];
   if (!card) return;
   state.openCardId = cardId;
   titleInput.value = card.title;
-  descriptionInput.value = card.description || '';
+  stopEditDescription();
+  loadDescription(card.description);
   syncModal();
   modal.showModal();
   autosizeTitle();
@@ -1065,7 +1432,7 @@ function syncModal() {
     titleInput.value = card.title;
     autosizeTitle();
   }
-  if (document.activeElement !== descriptionInput) descriptionInput.value = card.description || '';
+  if (!descEditing && (card.description || '') !== descLoaded) loadDescription(card.description);
 
   const currentColumn = columnOfCard(card.id);
   columnSelect.replaceChildren(...state.board.columns.map((c) => h('option', {
@@ -1076,19 +1443,18 @@ function syncModal() {
     btn.classList.toggle('is-active', btn.dataset.priority === card.priority);
   }
 
+  renderAttachments();
+
   const meta = [`Создана ${formatDate(card.createdAt)}`];
   if (card.updatedAt && card.updatedAt !== card.createdAt) meta.push(`изменена ${formatDate(card.updatedAt)}`);
   $('#cardMeta').textContent = meta.join(' · ');
 }
 
-function saveModalText() {
+function saveTitle() {
   const card = state.board?.cards[state.openCardId];
   if (!card || !state.online) return;
   const title = titleInput.value.replace(/\s+/g, ' ').trim();
-  const patch = {};
-  if (title && title !== card.title) patch.title = title;
-  if (descriptionInput.value !== (card.description || '')) patch.description = descriptionInput.value;
-  if (Object.keys(patch).length) updateCard(card.id, patch);
+  if (title && title !== card.title) updateCard(card.id, { title });
   if (!title) titleInput.value = card.title;
 }
 
@@ -1099,8 +1465,7 @@ titleInput.addEventListener('keydown', (e) => {
     titleInput.blur();
   }
 });
-titleInput.addEventListener('blur', saveModalText);
-descriptionInput.addEventListener('blur', saveModalText);
+titleInput.addEventListener('blur', saveTitle);
 
 priorityPicker.addEventListener('click', (e) => {
   const btn = e.target.closest('[data-priority]');
@@ -1121,14 +1486,27 @@ $('#cardDelete').addEventListener('click', () => {
   const card = state.board.cards[state.openCardId];
   if (!card || !state.online) return;
   if (!confirm(`Удалить задачу «${card.title}»?`)) return;
+  descDirty = false;
   state.openCardId = null;
   modal.close();
   deleteCard(card.id);
 });
 
+$('#cardClose').addEventListener('click', () => modal.close());
+
+// Esc сначала закрывает окошко ввода ссылки, а не всю задачу.
+modal.addEventListener('cancel', (e) => {
+  if (descEditing && descBox.querySelector('.ql-tooltip:not(.ql-hidden)')) {
+    e.preventDefault();
+    quill.theme.tooltip.hide();
+  }
+});
+
 modal.addEventListener('close', () => {
-  saveModalText();
+  saveTitle();
+  if (descEditing) saveDescription();
   state.openCardId = null;
+  modal.classList.remove('is-drop');
 });
 
 // Клик по затемнённому фону закрывает окно.

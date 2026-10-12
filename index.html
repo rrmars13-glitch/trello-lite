@@ -7,6 +7,7 @@
   <meta name="theme-color" content="#1f6feb">
   <link rel="manifest" href="manifest.webmanifest">
   <link rel="icon" href="icon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="vendor/quill.snow.css">
   <link rel="stylesheet" href="style.css">
 </head>
 <body class="is-auth">
@@ -57,10 +58,10 @@
   <main class="board" id="board" aria-live="polite"></main>
 
   <dialog class="modal" id="cardModal">
-    <form method="dialog" class="modal-body" id="cardForm">
+    <div class="modal-body" id="cardForm">
       <div class="modal-head">
         <textarea id="cardTitle" class="card-title-input" rows="1" maxlength="300" aria-label="Название задачи"></textarea>
-        <button type="submit" class="icon-btn" aria-label="Закрыть">✕</button>
+        <button type="button" class="icon-btn" id="cardClose" aria-label="Закрыть">✕</button>
       </div>
       <p class="modal-sub">в колонке
         <select id="cardColumn" aria-label="Колонка"></select>
@@ -76,19 +77,66 @@
       </div>
 
       <h3>Описание</h3>
-      <textarea id="cardDescription" class="description-input" rows="6" maxlength="10000" placeholder="Подробности задачи…"></textarea>
+      <div class="desc is-view" id="desc">
+        <div class="desc-toolbar" id="descToolbar">
+          <span class="ql-formats">
+            <select class="ql-header">
+              <option selected>Обычный текст</option>
+              <option value="1">Заголовок 1</option>
+              <option value="2">Заголовок 2</option>
+              <option value="3">Заголовок 3</option>
+            </select>
+          </span>
+          <span class="ql-formats">
+            <button type="button" class="ql-bold" title="Жирный (Ctrl+B)"></button>
+            <button type="button" class="ql-italic" title="Курсив (Ctrl+I)"></button>
+            <button type="button" class="ql-underline" title="Подчёркнутый (Ctrl+U)"></button>
+            <button type="button" class="ql-strike" title="Зачёркнутый"></button>
+          </span>
+          <span class="ql-formats">
+            <button type="button" class="ql-list" value="bullet" title="Маркированный список"></button>
+            <button type="button" class="ql-list" value="ordered" title="Нумерованный список"></button>
+            <button type="button" class="ql-list" value="check" title="Чек-лист"></button>
+          </span>
+          <span class="ql-formats">
+            <button type="button" class="ql-link" title="Ссылка (Ctrl+K)"></button>
+            <button type="button" class="ql-image" title="Картинка с компьютера"></button>
+            <button type="button" class="ql-blockquote" title="Цитата"></button>
+            <button type="button" class="ql-code-block" title="Код"></button>
+          </span>
+          <span class="ql-formats">
+            <button type="button" class="ql-clean" title="Убрать форматирование"></button>
+          </span>
+        </div>
+        <div class="desc-editor" id="descEditor"></div>
+        <div class="desc-actions">
+          <button type="button" class="primary-btn" id="descSave">Сохранить</button>
+          <button type="button" class="link-btn" id="descCancel">Отмена</button>
+          <span class="muted">Ctrl+Enter — сохранить</span>
+        </div>
+      </div>
+
+      <div class="section-head">
+        <h3>Вложения</h3>
+        <button type="button" class="chip" id="attachButton">📎 Прикрепить файл</button>
+        <input type="file" id="attachInput" multiple hidden>
+      </div>
+      <ul class="attachments" id="attachmentList"></ul>
+      <p class="muted drop-hint" id="dropHint">Файлы можно перетащить в это окно или вставить из буфера обмена (Ctrl+V).</p>
 
       <div class="modal-foot">
         <span class="muted" id="cardMeta"></span>
         <button type="button" class="danger-btn" id="cardDelete">Удалить задачу</button>
       </div>
-    </form>
+      <div class="drop-overlay" id="dropOverlay">Отпустите, чтобы прикрепить файлы</div>
+    </div>
   </dialog>
 
   <div class="toast" id="toast" role="status" hidden></div>
 
   <script src="config.js"></script>
   <script src="vendor/supabase.js"></script>
+  <script src="vendor/quill.js"></script>
   <script src="app.js"></script>
 </body>
 </html>
