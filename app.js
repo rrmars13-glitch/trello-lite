@@ -597,6 +597,7 @@ function renderColumn(col) {
 function renderCard(card) {
   const hasDescription = descriptionHasContent(card.description);
   const attachmentCount = attachmentsOf(card).length;
+  const checklist = checklistProgress(card.description);
   return h('article', {
     class: `card p-${card.priority}`, tabindex: 0, dataset: { id: card.id },
   },
@@ -609,6 +610,10 @@ function renderCard(card) {
     h('div', { class: 'card-meta' },
       hasDescription ? h('span', { title: 'Есть описание' }, '☰ описание') : null,
       attachmentCount ? h('span', { title: 'Вложения' }, `📎 ${attachmentCount}`) : null,
+      checklist ? h('span', {
+        class: checklist.done === checklist.total ? 'checklist-done' : null,
+        title: 'Выполнено пунктов чек-листа',
+      }, `☑ ${checklist.done}/${checklist.total}`) : null,
     ),
   );
 }
@@ -1186,10 +1191,37 @@ function cancelDescription() {
 }
 
 // Клик по тексту описания открывает редактор (кнопки «Сохранить»/«Отмена» сюда не относятся).
+// Клик по квадратику чек-листа отмечает пункт сразу, без открытия редактора.
 quill.container.addEventListener('click', (e) => {
   if (!descBox.classList.contains('is-view') || e.target.closest('a')) return;
+  const checkbox = e.target.closest('li[data-list="checked"] > .ql-ui, li[data-list="unchecked"] > .ql-ui');
+  if (checkbox) {
+    toggleChecklistItem(checkbox.parentElement);
+    return;
+  }
   startEditDescription();
 });
+
+function toggleChecklistItem(li) {
+  const card = state.board?.cards[state.openCardId];
+  if (!card) return;
+  if (!state.online) { toast('Нет связи — отметка не сохранится'); return; }
+  const blot = Quill.find(li);
+  if (!blot) return;
+  const next = li.getAttribute('data-list') === 'checked' ? 'unchecked' : 'checked';
+  quill.formatLine(quill.getIndex(blot), 1, 'list', next, 'api');
+  const html = quill.root.innerHTML;
+  descLoaded = html;
+  updateCard(card.id, { description: html });
+}
+
+// Прогресс чек-листа в описании: { done, total } или null, если чек-листа нет.
+function checklistProgress(value) {
+  if (!value) return null;
+  const done = (value.match(/data-list="checked"/g) || []).length;
+  const total = done + (value.match(/data-list="unchecked"/g) || []).length;
+  return total ? { done, total } : null;
+}
 descBox.addEventListener('keydown', (e) => {
   if (e.key === 'Enter' && (e.ctrlKey || e.metaKey) && descEditing) {
     e.preventDefault();

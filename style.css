@@ -305,6 +305,12 @@ button { cursor: pointer; }
   font-size: 12px;
 }
 .card-meta:empty { display: none; }
+.card-meta .checklist-done {
+  padding: 0 4px;
+  border-radius: 4px;
+  background: var(--p-low);
+  color: #fff;
+}
 
 .placeholder {
   flex: none;
@@ -488,6 +494,35 @@ body.is-readonly .column-head { cursor: default; }
 .desc .ql-editor blockquote { border-left-color: var(--border); color: var(--muted); }
 .desc .ql-editor .ql-code-block-container { background: var(--placeholder); color: var(--text); border-radius: 6px; }
 .desc .ql-editor.ql-blank::before { color: var(--muted); font-style: normal; left: 14px; }
+
+/* Чек-лист: пустой квадратик → зелёная галочка, выполненный пункт зачёркнут. */
+.desc .ql-editor li[data-list=checked] > .ql-ui,
+.desc .ql-editor li[data-list=unchecked] > .ql-ui { cursor: pointer; }
+.desc .ql-editor li[data-list=checked] > .ql-ui::before,
+.desc .ql-editor li[data-list=unchecked] > .ql-ui::before {
+  content: '';
+  box-sizing: border-box;
+  width: 16px;
+  height: 16px;
+  margin-right: calc(1.5em - 16px);
+  border: 2px solid var(--muted);
+  border-radius: 4px;
+  background: var(--card) center / 12px no-repeat;
+  vertical-align: -3px;
+  transition: background-color 0.15s, border-color 0.15s;
+}
+.desc .ql-editor li[data-list=unchecked] > .ql-ui:hover::before { border-color: var(--p-low); }
+.desc .ql-editor li[data-list=checked] > .ql-ui::before {
+  border-color: var(--p-low);
+  background-color: var(--p-low);
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M3.5 8.5l3 3 6-7' fill='none' stroke='white' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+}
+.desc .ql-editor li[data-list=checked] {
+  color: var(--muted);
+  text-decoration: line-through;
+}
+.desc .ql-editor li[data-list=checked],
+.desc .ql-editor li[data-list=unchecked] { margin: 3px 0; }
 
 .desc-actions {
   display: flex;
