@@ -9,14 +9,12 @@ const PRIORITY_LABELS = {
   urgent: 'Срочно',
 };
 const CACHE_KEY = 'trello-lite:board';
-const FILTER_KEY = 'trello-lite:filter';
 
 const state = {
   user: null,
   board: null,         // { boards, boardId, columns, cards } — список досок и содержимое открытой
   activeBoardId: null, // какую доску показываем (пока грузится — может не совпадать с board.boardId)
   online: null,        // null — ещё не знаем
-  filter: 'all',
   pending: 0,          // записи в облако в полёте
   writeSeq: 0,         // сколько записей завершилось — чтобы отбрасывать устаревшие ответы
   seeded: false,
@@ -748,14 +746,18 @@ function render() {
   state.rendering = false;
 }
 
-function visibleCards(col) {
-  const cards = col.cardIds.map((id) => state.board.cards[id]).filter(Boolean);
-  return state.filter === 'all' ? cards : cards.filter((c) => c.priority === state.filter);
+// В колонке задачи идут по важности: срочные, высокие, средние, низкие, без важности.
+// Внутри одной важности — в том порядке, в каком их расставили.
+const PRIORITY_RANK = { urgent: 0, high: 1, medium: 2, low: 3, none: 4 };
+const rankOf = (card) => PRIORITY_RANK[card.priority] ?? PRIORITY_RANK.none;
+
+function sortedCards(col) {
+  return col.cardIds.map((id) => state.board.cards[id]).filter(Boolean)
+    .sort((a, b) => rankOf(a) - rankOf(b));
 }
 
 function renderColumn(col) {
-  const total = col.cardIds.length;
-  const visible = visibleCards(col);
+  const cards = sortedCards(col);
   const isRenaming = state.renaming?.columnId === col.id;
 
   const title = isRenaming
@@ -765,17 +767,13 @@ function renderColumn(col) {
   return h('section', { class: 'column', dataset: { id: col.id } },
     h('div', { class: 'column-head' },
       title,
-      h('span', { class: 'column-count' }, state.filter === 'all' ? total : `${visible.length} из ${total}`),
+      h('span', { class: 'column-count' }, cards.length),
       h('button', {
         type: 'button', class: 'icon-btn', 'aria-label': 'Действия с колонкой',
         dataset: { action: 'column-menu' },
       }, '⋯'),
     ),
-    h('div', { class: 'card-list' }, visible.map(renderCard)),
-    visible.length < total
-      ? h('button', { type: 'button', class: 'filter-hint', dataset: { action: 'show-all' } },
-        `Скрыто фильтром: ${total - visible.length} · Показать все`)
-      : null,
+    h('div', { class: 'card-list' }, cards.map(renderCard)),
     h('div', { class: 'column-foot' },
       state.composer?.columnId === col.id
         ? renderComposer(col)
@@ -901,7 +899,7 @@ function openComposer(columnId) {
   state.composer = {
     columnId,
     text: '',
-    priority: state.filter === 'all' ? 'none' : state.filter,
+    priority: 'none',
   };
   render();
   focusByKey(`composer-${columnId}`);
@@ -995,7 +993,6 @@ boardEl.addEventListener('click', (e) => {
     const columnId = actionEl.closest('.column')?.dataset.id;
     switch (actionEl.dataset.action) {
       case 'add-card': return openComposer(columnId);
-      case 'show-all': return applyFilter('all');
       case 'column-menu':
         if (openMenu) return closeColumnMenu();
         return showColumnMenu(actionEl, columnId);
@@ -1220,8 +1217,18 @@ function finishDrag(cancelled) {
       const next = nextVisibleSibling(d.placeholder, '.card');
       const col = columnId && findColumn(columnId);
       if (col) {
+        // Задача всё равно встанет к своей важности, поэтому место считаем
+        // по соседям той же важности: перед следующей такой или после предыдущей.
         const ids = col.cardIds.filter((id) => id !== d.id);
-        const index = next ? ids.indexOf(next.dataset.id) : ids.length;
+        const rank = rankOf(state.board.cards[d.id]);
+        const sameRank = (el) => el !== d.el && rankOf(state.board.cards[el.dataset.id] || {}) === rank;
+        const listCards = [...d.placeholder.parentElement.children].filter((el) => el === d.placeholder || el.matches('.card'));
+        const at = listCards.indexOf(d.placeholder);
+        const nextSame = listCards.slice(at + 1).find(sameRank);
+        const prevSame = listCards.slice(0, at).reverse().find(sameRank);
+        const index = nextSame ? ids.indexOf(nextSame.dataset.id)
+          : prevSame ? ids.indexOf(prevSame.dataset.id) + 1
+          : next ? ids.indexOf(next.dataset.id) : ids.length;
         const from = columnOfCard(d.id);
         const unchanged = from === col && from.cardIds.indexOf(d.id) === index;
         if (!unchanged) target = () => moveCard(d.id, col.id, index);
@@ -1793,25 +1800,8 @@ modal.addEventListener('click', (e) => {
   if (e.target === modal) modal.close();
 });
 
-// ---------- Фильтр по важности ----------
-
-function applyFilter(value) {
-  state.filter = value === 'all' || PRIORITIES.includes(value) ? value : 'all';
-  for (const chip of document.querySelectorAll('[data-filter]')) {
-    chip.classList.toggle('is-active', chip.dataset.filter === state.filter);
-  }
-  storageSet(FILTER_KEY, state.filter);
-  render();
-}
-
-document.querySelector('.filter').addEventListener('click', (e) => {
-  const chip = e.target.closest('[data-filter]');
-  if (chip) applyFilter(chip.dataset.filter);
-});
-
 // ---------- Запуск ----------
 
-applyFilter(storageGet(FILTER_KEY) || 'all');
 startAuth();
 
 if ('serviceWorker' in navigator) {
