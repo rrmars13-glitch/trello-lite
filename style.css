@@ -495,9 +495,36 @@ body.is-readonly .column-head { cursor: default; }
 .desc .ql-editor .ql-code-block-container { background: var(--placeholder); color: var(--text); border-radius: 6px; }
 .desc .ql-editor.ql-blank::before { color: var(--muted); font-style: normal; left: 14px; }
 
-/* Чек-лист: пустой квадратик → зелёная галочка, выполненный пункт зачёркнут. */
+/* Чек-лист: пустой квадратик → зелёная галочка, выполненный пункт зачёркнут.
+   В нумерованном списке квадратик стоит после номера: 'ordered' — пустой, 'numchecked' — отмечен. */
 .desc .ql-editor li[data-list=checked] > .ql-ui,
-.desc .ql-editor li[data-list=unchecked] > .ql-ui { cursor: pointer; }
+.desc .ql-editor li[data-list=unchecked] > .ql-ui,
+.desc .ql-editor li[data-list=ordered] > .ql-ui,
+.desc .ql-editor li[data-list=numchecked] > .ql-ui { cursor: pointer; }
+
+.desc .ql-editor li[data-list=ordered],
+.desc .ql-editor li[data-list=numchecked] { padding-left: calc(2.7em + 16px); margin: 3px 0; }
+.desc .ql-editor li[data-list=ordered] > .ql-ui::before,
+.desc .ql-editor li[data-list=numchecked] > .ql-ui::before {
+  width: 2em;
+  margin-left: calc(-2.7em - 16px);
+  margin-right: 0.3em;
+}
+.desc .ql-editor li[data-list=numchecked] { counter-increment: list-0; }
+.desc .ql-editor li[data-list=numchecked] > .ql-ui::before { content: counter(list-0, decimal) '. '; }
+.desc .ql-editor li[data-list=numchecked].ql-indent-1 { counter-increment: list-1; }
+.desc .ql-editor li[data-list=numchecked].ql-indent-1 > .ql-ui::before { content: counter(list-1, lower-alpha) '. '; }
+.desc .ql-editor li[data-list=numchecked].ql-indent-2 { counter-increment: list-2; }
+.desc .ql-editor li[data-list=numchecked].ql-indent-2 > .ql-ui::before { content: counter(list-2, lower-roman) '. '; }
+.desc .ql-editor li[data-list=numchecked].ql-indent-3 { counter-increment: list-3; }
+.desc .ql-editor li[data-list=numchecked].ql-indent-3 > .ql-ui::before { content: counter(list-3, decimal) '. '; }
+.desc .ql-editor li[data-list=numchecked].ql-indent-4 { counter-increment: list-4; }
+.desc .ql-editor li[data-list=numchecked].ql-indent-4 > .ql-ui::before { content: counter(list-4, lower-alpha) '. '; }
+.desc .ql-editor li[data-list=numchecked].ql-indent-5 { counter-increment: list-5; }
+.desc .ql-editor li[data-list=numchecked].ql-indent-5 > .ql-ui::before { content: counter(list-5, lower-roman) '. '; }
+
+.desc .ql-editor li[data-list=ordered] > .ql-ui::after,
+.desc .ql-editor li[data-list=numchecked] > .ql-ui::after,
 .desc .ql-editor li[data-list=checked] > .ql-ui::before,
 .desc .ql-editor li[data-list=unchecked] > .ql-ui::before {
   content: '';
@@ -511,13 +538,21 @@ body.is-readonly .column-head { cursor: default; }
   vertical-align: -3px;
   transition: background-color 0.15s, border-color 0.15s;
 }
-.desc .ql-editor li[data-list=unchecked] > .ql-ui:hover::before { border-color: var(--p-low); }
+.desc .ql-editor li[data-list=ordered] > .ql-ui::after,
+.desc .ql-editor li[data-list=numchecked] > .ql-ui::after {
+  display: inline-block;
+  margin-right: 0;
+}
+.desc .ql-editor li[data-list=unchecked] > .ql-ui:hover::before,
+.desc .ql-editor li[data-list=ordered] > .ql-ui:hover::after { border-color: var(--p-low); }
+.desc .ql-editor li[data-list=numchecked] > .ql-ui::after,
 .desc .ql-editor li[data-list=checked] > .ql-ui::before {
   border-color: var(--p-low);
   background-color: var(--p-low);
   background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M3.5 8.5l3 3 6-7' fill='none' stroke='white' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
 }
-.desc .ql-editor li[data-list=checked] {
+.desc .ql-editor li[data-list=checked],
+.desc .ql-editor li[data-list=numchecked] {
   color: var(--muted);
   text-decoration: line-through;
 }

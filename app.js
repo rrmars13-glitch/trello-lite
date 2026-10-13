@@ -1112,14 +1112,66 @@ function formatSize(bytes) {
 
 // ---------- Описание: редактор с форматированием ----------
 
+// Пункты, которые можно отмечать: чек-лист (checked/unchecked) и нумерованный список —
+// у него пустой квадратик это 'ordered', а отмеченный пункт — 'numchecked'.
+const CHECK_TOGGLE = { unchecked: 'checked', checked: 'unchecked', ordered: 'numchecked', numchecked: 'ordered' };
+const CHECKBOX_SELECTOR = Object.keys(CHECK_TOGGLE).map((v) => `li[data-list="${v}"] > .ql-ui`).join(', ');
+const Delta = Quill.import('delta');
+
 const quill = new Quill('#descEditor', {
   theme: 'snow',
   placeholder: 'Добавьте подробное описание…',
   readOnly: true,
   modules: {
-    toolbar: { container: '#descToolbar', handlers: { image: pickInlineImage } },
+    toolbar: { container: '#descToolbar', handlers: { image: pickInlineImage, list: applyListFormat } },
     uploader: { mimetypes: IMAGE_TYPES, handler: uploadInlineImages },
+    keyboard: {
+      bindings: {
+        // Enter после отмеченного нумерованного пункта создаёт новый — неотмеченный.
+        'numbered checklist enter': {
+          key: 'Enter',
+          collapsed: true,
+          format: { list: 'numchecked' },
+          handler(range) {
+            const [line, offset] = quill.getLine(range.index);
+            const delta = new Delta()
+              .retain(range.index)
+              .insert('\n', { ...line.formats(), list: 'numchecked' })
+              .retain(line.length() - offset - 1)
+              .retain(1, { list: 'ordered' });
+            quill.updateContents(delta, 'user');
+            quill.setSelection(range.index + 1, 'silent');
+            return false;
+          },
+        },
+      },
+    },
   },
+});
+
+// Кнопки списков: повторное нажатие убирает список (в том числе с отмеченных пунктов).
+function applyListFormat(value) {
+  const current = quill.getFormat(quill.getSelection(true)).list;
+  const family = { check: ['checked', 'unchecked'], ordered: ['ordered', 'numchecked'] }[value];
+  if (!value || (family && family.includes(current))) quill.format('list', false, 'user');
+  else quill.format('list', value === 'check' ? 'unchecked' : value, 'user');
+}
+
+// Кнопка «нумерованный список» подсвечена и на отмеченных нумерованных пунктах.
+const orderedButton = $('#descToolbar .ql-list[value="ordered"]');
+quill.on('editor-change', () => {
+  const range = quill.getSelection();
+  if (range) orderedButton.classList.toggle('ql-active', ['ordered', 'numchecked'].includes(quill.getFormat(range).list));
+});
+
+// В редакторе квадратики нумерованного списка переключаются сами (чек-лист Quill умеет и без нас).
+quill.root.addEventListener('mousedown', (e) => {
+  const box = e.target.closest('li[data-list="ordered"] > .ql-ui, li[data-list="numchecked"] > .ql-ui');
+  if (!box || !quill.isEnabled()) return;
+  e.preventDefault();
+  const li = box.parentElement;
+  const blot = Quill.find(li);
+  if (blot) quill.formatLine(quill.getIndex(blot), 1, 'list', CHECK_TOGGLE[li.getAttribute('data-list')], 'user');
 });
 
 let descEditing = false;
@@ -1194,7 +1246,7 @@ function cancelDescription() {
 // Клик по квадратику чек-листа отмечает пункт сразу, без открытия редактора.
 quill.container.addEventListener('click', (e) => {
   if (!descBox.classList.contains('is-view') || e.target.closest('a')) return;
-  const checkbox = e.target.closest('li[data-list="checked"] > .ql-ui, li[data-list="unchecked"] > .ql-ui');
+  const checkbox = e.target.closest(CHECKBOX_SELECTOR);
   if (checkbox) {
     toggleChecklistItem(checkbox.parentElement);
     return;
@@ -1208,7 +1260,8 @@ function toggleChecklistItem(li) {
   if (!state.online) { toast('Нет связи — отметка не сохранится'); return; }
   const blot = Quill.find(li);
   if (!blot) return;
-  const next = li.getAttribute('data-list') === 'checked' ? 'unchecked' : 'checked';
+  const next = CHECK_TOGGLE[li.getAttribute('data-list')];
+  if (!next) return;
   quill.formatLine(quill.getIndex(blot), 1, 'list', next, 'api');
   const html = quill.root.innerHTML;
   descLoaded = html;
@@ -1218,8 +1271,8 @@ function toggleChecklistItem(li) {
 // Прогресс чек-листа в описании: { done, total } или null, если чек-листа нет.
 function checklistProgress(value) {
   if (!value) return null;
-  const done = (value.match(/data-list="checked"/g) || []).length;
-  const total = done + (value.match(/data-list="unchecked"/g) || []).length;
+  const done = (value.match(/data-list="(checked|numchecked)"/g) || []).length;
+  const total = done + (value.match(/data-list="(unchecked|ordered)"/g) || []).length;
   return total ? { done, total } : null;
 }
 descBox.addEventListener('keydown', (e) => {
