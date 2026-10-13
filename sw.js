@@ -2,7 +2,7 @@
 // сохранённую копию интерфейса (доска тогда открывается только для просмотра).
 // Запросы к Supabase (другой домен) не трогаем.
 
-const CACHE = 'trello-lite-v7';
+const CACHE = 'trello-lite-v8';
 const SHELL = [
   './', 'index.html', 'style.css', 'app.js', 'config.js',
   'vendor/supabase.js', 'vendor/quill.js', 'vendor/quill.snow.css', 'manifest.webmanifest', 'icon.svg',

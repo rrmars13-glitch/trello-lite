@@ -772,6 +772,10 @@ function renderColumn(col) {
       }, '⋯'),
     ),
     h('div', { class: 'card-list' }, visible.map(renderCard)),
+    visible.length < total
+      ? h('button', { type: 'button', class: 'filter-hint', dataset: { action: 'show-all' } },
+        `Скрыто фильтром: ${total - visible.length} · Показать все`)
+      : null,
     h('div', { class: 'column-foot' },
       state.composer?.columnId === col.id
         ? renderComposer(col)
@@ -991,6 +995,7 @@ boardEl.addEventListener('click', (e) => {
     const columnId = actionEl.closest('.column')?.dataset.id;
     switch (actionEl.dataset.action) {
       case 'add-card': return openComposer(columnId);
+      case 'show-all': return applyFilter('all');
       case 'column-menu':
         if (openMenu) return closeColumnMenu();
         return showColumnMenu(actionEl, columnId);

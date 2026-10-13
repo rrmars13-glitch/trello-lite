@@ -389,6 +389,18 @@ body.is-dragging, body.is-dragging * { cursor: grabbing !important; user-select:
 }
 .add-btn:hover { background: var(--placeholder); color: var(--text); }
 
+.filter-hint {
+  margin: 0 8px 4px;
+  padding: 6px 10px;
+  border: 1px dashed var(--border);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--accent);
+  font-size: 13px;
+  text-align: left;
+}
+.filter-hint:hover { background: var(--accent-soft); }
+
 .composer textarea,
 .composer input {
   width: 100%;
@@ -839,4 +851,17 @@ body.is-auth .board { display: none; }
 @media (max-width: 600px) {
   :root { --column-width: 85vw; }
   .filter-label { display: none; }
+  .topbar { gap: 8px 12px; padding: 8px 12px; }
+  .sync { margin-left: auto; }
+  .sync-text { display: none; }
+  /* Фильтр — отдельной строкой с прокруткой вбок, а не столбиком. */
+  .filter {
+    order: 10;
+    flex: 1 0 100%;
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+  .filter::-webkit-scrollbar { display: none; }
+  .chip { flex: none; white-space: nowrap; }
 }
