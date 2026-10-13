@@ -440,6 +440,21 @@ function deleteColumn(columnId) {
   send(() => sb.from('columns').delete().eq('id', columnId)).then((ok) => ok && removeFiles(paths));
 }
 
+// Удаляет все задачи колонки, сама колонка остаётся.
+function clearColumn(columnId) {
+  const col = findColumn(columnId);
+  if (!col) return;
+  const ids = [...col.cardIds];
+  if (!ids.length) { toast('В колонке нет задач'); return; }
+  if (!confirm(`Удалить все задачи из колонки «${col.title}» (${pluralTasks(ids.length)})?`)) return;
+  const paths = ids.flatMap((id) => attachmentsOf(state.board.cards[id]).map((a) => a.path));
+  for (const id of ids) delete state.board.cards[id];
+  col.cardIds = [];
+  render();
+  // Удаляем именно эти задачи: если с другого устройства только что добавили новую, она останется.
+  send(() => sb.from('cards').delete().in('id', ids)).then((ok) => ok && removeFiles(paths));
+}
+
 // ---------- Вход и выход ----------
 
 const loginForm = $('#loginForm');
@@ -781,6 +796,7 @@ function showColumnMenu(button, columnId) {
   openMenu = h('div', { class: 'column-menu', role: 'menu' },
     h('button', { type: 'button', onclick: () => { closeColumnMenu(); openComposer(columnId); } }, 'Добавить задачу'),
     h('button', { type: 'button', onclick: () => { closeColumnMenu(); startRename(columnId); } }, 'Переименовать'),
+    h('button', { type: 'button', class: 'danger', onclick: () => { closeColumnMenu(); clearColumn(columnId); } }, 'Очистить колонку'),
     h('button', { type: 'button', class: 'danger', onclick: () => { closeColumnMenu(); deleteColumn(columnId); } }, 'Удалить колонку'),
   );
   document.body.append(openMenu);
@@ -1588,6 +1604,8 @@ modal.addEventListener('cancel', (e) => {
 });
 
 modal.addEventListener('close', () => {
+  // Событие приходит с задержкой: если окно уже успели открыть снова, оно не про текущую задачу.
+  if (modal.open) return;
   saveTitle();
   if (descEditing) saveDescription();
   state.openCardId = null;
