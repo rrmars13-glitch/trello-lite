@@ -13,7 +13,8 @@ const FILTER_KEY = 'trello-lite:filter';
 
 const state = {
   user: null,
-  board: null,
+  board: null,         // { boards, boardId, columns, cards } — список досок и содержимое открытой
+  activeBoardId: null, // какую доску показываем (пока грузится — может не совпадать с board.boardId)
   online: null,        // null — ещё не знаем
   filter: 'all',
   pending: 0,          // записи в облако в полёте
@@ -111,6 +112,7 @@ const sb = isConfigured && window.supabase ? window.supabase.createClient(config
 const STEP = 1024;            // шаг между позициями карточек и колонок
 const RELOAD_EVERY_MS = 30000; // страховочная перезагрузка, если живое обновление потерялось
 const DEFAULT_COLUMNS = ['Нужно сделать', 'В процессе', 'Выполнено'];
+const DEFAULT_BOARD_TITLE = 'Моя доска';
 
 function uuid() {
   if (crypto.randomUUID) return crypto.randomUUID();
@@ -134,7 +136,7 @@ const SCHEMA_HINT = 'Обновите базу: выполните заново 
 function describeError(err) {
   const message = err?.message || `${err}`;
   if (isNetworkError(err)) return 'Нет связи с облаком — изменение не сохранено';
-  if (/bucket not found|attachments/i.test(message)) return SCHEMA_HINT;
+  if (/bucket not found|attachments|boards|board_id/i.test(message)) return SCHEMA_HINT;
   if (/jwt|token|auth/i.test(message)) return 'Сессия истекла — войдите заново';
   return `Ошибка: ${message}`;
 }
@@ -145,7 +147,15 @@ function removeFiles(paths) {
   sb.storage.from('attachments').remove(paths).catch(() => {});
 }
 
-function buildBoard(columnRows, cardRows) {
+const ACTIVE_BOARD_KEY = 'trello-lite:active-board';
+
+// Какую доску открывать на этом устройстве (запоминается отдельно для каждого пользователя).
+function activeBoardKey() {
+  return `${ACTIVE_BOARD_KEY}:${state.user?.id}`;
+}
+
+function buildBoard(boardRows, boardId, columnRows, cardRows) {
+  const boards = boardRows.map((b) => ({ id: b.id, title: b.title, position: b.position }));
   const columns = columnRows.map((c) => ({ id: c.id, title: c.title, position: c.position, cardIds: [] }));
   const byId = new Map(columns.map((c) => [c.id, c]));
   const cards = {};
@@ -165,28 +175,43 @@ function buildBoard(columnRows, cardRows) {
     };
     col.cardIds.push(r.id);
   }
-  return { columns, cards };
+  return { boards, boardId, columns, cards };
 }
 
 const CARD_FIELDS = 'id,column_id,title,description,priority,position,created_at,updated_at';
 let schemaOutdated = false; // в базе ещё нет колонки для вложений
 
-async function fetchBoard() {
+// Загружает список досок и содержимое одной из них: нужной, а если её уже нет — первой.
+async function fetchBoard(wantedBoardId) {
+  const selectColumns = (id) => sb.from('columns').select('id,title,position')
+    .eq('board_id', id).order('position').order('created_at');
+  // Список досок и колонки нужной доски запрашиваем одновременно — так быстрее.
+  const [boardsRes, wantedCols] = await Promise.all([
+    sb.from('boards').select('id,title,position').order('position').order('created_at'),
+    wantedBoardId ? selectColumns(wantedBoardId) : null,
+  ]);
+  if (boardsRes.error) throw boardsRes.error;
+  const boards = boardsRes.data;
+  if (!boards.length) return buildBoard([], null, [], []);
+  const boardId = boards.some((b) => b.id === wantedBoardId) ? wantedBoardId : boards[0].id;
+
+  const cols = boardId === wantedBoardId ? wantedCols : await selectColumns(boardId);
+  if (cols.error) throw cols.error;
+  const columnIds = cols.data.map((c) => c.id);
+  if (!columnIds.length) return buildBoard(boards, boardId, [], []);
+
   const selectCards = () => sb.from('cards')
     .select(schemaOutdated ? CARD_FIELDS : `${CARD_FIELDS},attachments`)
+    .in('column_id', columnIds)
     .order('position').order('created_at');
-  let [cols, cards] = await Promise.all([
-    sb.from('columns').select('id,title,position').order('position').order('created_at'),
-    selectCards(),
-  ]);
+  let cards = await selectCards();
   if (cards.error && !schemaOutdated && /attachments/i.test(cards.error.message || '')) {
     schemaOutdated = true;
     toast(SCHEMA_HINT);
     cards = await selectCards();
   }
-  if (cols.error) throw cols.error;
   if (cards.error) throw cards.error;
-  return buildBoard(cols.data, cards.data);
+  return buildBoard(boards, boardId, cols.data, cards.data);
 }
 
 function setBoard(board) {
@@ -221,15 +246,19 @@ async function reload() {
   reloadRunning = true;
   const userId = state.user.id;
   const writeSeq = state.writeSeq;
+  const wantedBoardId = state.activeBoardId;
   try {
-    let board = await fetchBoard();
-    if (!board.columns.length && !Object.keys(board.cards).length && !state.seeded) {
+    let board = await fetchBoard(wantedBoardId);
+    if (!board.boards.length && !state.seeded) {
       state.seeded = true;
-      await createDefaultColumns();
-      board = await fetchBoard();
+      await createDefaultBoard();
+      board = await fetchBoard(wantedBoardId);
     }
-    // Ответ устарел, если за это время пользователь сменился или успел что-то записать.
+    // Ответ устарел, если за это время пользователь сменился, успел что-то записать или открыл другую доску.
     if (state.user?.id !== userId || state.pending > 0 || writeSeq !== state.writeSeq) return;
+    if (state.activeBoardId !== wantedBoardId) { reloadAgain = true; return; }
+    state.activeBoardId = board.boardId;
+    if (board.boardId) storageSet(activeBoardKey(), board.boardId);
     state.queuedBoard = board;
     flushQueuedBoard();
   } catch (err) {
@@ -241,9 +270,16 @@ async function reload() {
   }
 }
 
-async function createDefaultColumns() {
-  const rows = DEFAULT_COLUMNS.map((title, i) => ({ id: uuid(), title, position: (i + 1) * STEP }));
-  const { error } = await sb.from('columns').insert(rows);
+function defaultColumnRows(boardId) {
+  return DEFAULT_COLUMNS.map((title, i) => ({ id: uuid(), board_id: boardId, title, position: (i + 1) * STEP }));
+}
+
+// Первая доска нового пользователя.
+async function createDefaultBoard() {
+  const id = uuid();
+  const created = await sb.from('boards').insert({ id, title: DEFAULT_BOARD_TITLE, position: STEP });
+  if (created.error) throw created.error;
+  const { error } = await sb.from('columns').insert(defaultColumnRows(id));
   if (error) throw error;
 }
 
@@ -292,6 +328,7 @@ function subscribe() {
   unsubscribe();
   state.channelSince = Date.now();
   state.channel = sb.channel(`board-${state.user.id}`)
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'boards' }, () => scheduleReload())
     .on('postgres_changes', { event: '*', schema: 'public', table: 'columns' }, () => scheduleReload())
     .on('postgres_changes', { event: '*', schema: 'public', table: 'cards' }, () => scheduleReload())
     .subscribe((status) => {
@@ -413,9 +450,10 @@ function deleteCard(cardId) {
 function addColumn(title) {
   const last = state.board.columns[state.board.columns.length - 1];
   const col = { id: uuid(), title, position: (last?.position ?? 0) + STEP, cardIds: [] };
+  const boardId = state.board.boardId;
   state.board.columns.push(col);
   render();
-  send(() => sb.from('columns').insert({ id: col.id, title, position: col.position }));
+  send(() => sb.from('columns').insert({ id: col.id, board_id: boardId, title, position: col.position }));
 }
 
 function renameColumn(columnId, title) {
@@ -455,6 +493,130 @@ function clearColumn(columnId) {
   send(() => sb.from('cards').delete().in('id', ids)).then((ok) => ok && removeFiles(paths));
 }
 
+// ---------- Доски ----------
+
+function currentBoard() {
+  return state.board?.boards?.find((b) => b.id === state.board.boardId) || null;
+}
+
+// Показывает другую доску: сразу пустую, а содержимое подтягивается из облака.
+function showBoard(boardId, columns = []) {
+  if (modal.open) modal.close();
+  cancelDrag();
+  Object.assign(state, { composer: null, addingColumn: null, renaming: null, queuedBoard: null });
+  state.activeBoardId = boardId;
+  storageSet(activeBoardKey(), boardId);
+  state.board = { ...state.board, boardId, columns, cards: {} };
+  boardEl.scrollLeft = 0;
+  render();
+}
+
+function switchBoard(boardId) {
+  if (!state.board || boardId === state.board.boardId) return;
+  if (!state.online) { toast('Нет связи — другую доску сейчас не загрузить'); return; }
+  showBoard(boardId);
+  scheduleReload(0);
+}
+
+function createBoard(title) {
+  const boards = state.board.boards;
+  const id = uuid();
+  const position = (boards[boards.length - 1]?.position ?? 0) + STEP;
+  const columns = defaultColumnRows(id);
+  boards.push({ id, title, position });
+  showBoard(id, columns.map((c) => ({ id: c.id, title: c.title, position: c.position, cardIds: [] })));
+  send(() => sb.from('boards').insert({ id, title, position }));
+  send(() => sb.from('columns').insert(columns));
+}
+
+function renameBoard(boardId, title) {
+  const board = state.board.boards.find((b) => b.id === boardId);
+  if (!board || !title || board.title === title) return;
+  board.title = title;
+  render();
+  send(() => sb.from('boards').update({ title }).eq('id', boardId));
+}
+
+// Удаляет открытую доску со всеми колонками и задачами и переключает на соседнюю.
+function deleteBoard() {
+  const board = currentBoard();
+  if (!board) return;
+  const boards = state.board.boards;
+  if (boards.length <= 1) { toast('Нельзя удалить единственную доску'); return; }
+  const count = Object.keys(state.board.cards).length;
+  const what = count ? `со всеми колонками и задачами (${pluralTasks(count)})` : 'со всеми колонками';
+  if (!confirm(`Удалить доску «${board.title}» ${what}? Это нельзя отменить.`)) return;
+  const paths = Object.values(state.board.cards).flatMap((c) => attachmentsOf(c).map((a) => a.path));
+  const index = boards.indexOf(board);
+  state.board.boards = boards.filter((b) => b !== board);
+  showBoard(state.board.boards[Math.min(index, state.board.boards.length - 1)].id);
+  // Колонки и задачи доски база удалит сама (on delete cascade), файлы вложений — убираем мы.
+  send(() => sb.from('boards').delete().eq('id', board.id)).then((ok) => ok && removeFiles(paths));
+}
+
+function renderBoardSwitcher() {
+  const board = currentBoard();
+  $('#boardName').textContent = board?.title || 'Доска';
+  document.title = board ? `${board.title} — Trello Lite` : 'Trello Lite';
+}
+
+function showBoardMenu() {
+  closeColumnMenu();
+  const button = $('#boardButton');
+  const rect = button.getBoundingClientRect();
+  const boards = state.board?.boards || [];
+  openMenu = h('div', { class: 'column-menu board-menu', role: 'menu' },
+    h('div', { class: 'menu-title' }, 'Доски'),
+    boards.map((b) => h('button', {
+      type: 'button',
+      class: b.id === state.board.boardId ? 'is-current' : null,
+      onclick: () => { closeColumnMenu(); switchBoard(b.id); },
+    }, h('span', { class: 'menu-check' }, b.id === state.board.boardId ? '✓' : ''), b.title)),
+    state.online ? [
+      h('hr'),
+      h('button', { type: 'button', onclick: () => showBoardForm('create') }, '＋ Новая доска'),
+      h('button', { type: 'button', onclick: () => showBoardForm('rename') }, 'Переименовать доску'),
+      h('button', { type: 'button', class: 'danger', onclick: () => { closeColumnMenu(); deleteBoard(); } }, 'Удалить доску'),
+    ] : null,
+  );
+  document.body.append(openMenu);
+  openMenu.style.left = `${Math.max(8, rect.left) + window.scrollX}px`;
+  openMenu.style.top = `${rect.bottom + 4 + window.scrollY}px`;
+}
+
+// Форма в том же меню: название новой доски или новое название текущей.
+function showBoardForm(mode) {
+  const board = currentBoard();
+  const input = h('input', { class: 'menu-input', maxlength: 100, placeholder: 'Название доски' });
+  if (mode === 'rename') input.value = board?.title || '';
+  const submit = () => {
+    const title = input.value.replace(/\s+/g, ' ').trim();
+    if (!title) { input.focus(); return; }
+    closeColumnMenu();
+    if (mode === 'create') createBoard(title);
+    else renameBoard(board.id, title);
+  };
+  input.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); submit(); }
+    else if (e.key === 'Escape') closeColumnMenu();
+  });
+  openMenu.replaceChildren(
+    h('div', { class: 'menu-title' }, mode === 'create' ? 'Новая доска' : 'Переименовать доску'),
+    input,
+    h('div', { class: 'composer-row' },
+      h('button', { type: 'button', class: 'primary-btn', onclick: submit }, mode === 'create' ? 'Создать' : 'Сохранить'),
+      h('button', { type: 'button', class: 'link-btn', onclick: closeColumnMenu }, 'Отмена'),
+    ),
+  );
+  input.focus();
+  input.select();
+}
+
+$('#boardButton').addEventListener('click', () => {
+  if (openMenu?.classList.contains('board-menu')) closeColumnMenu();
+  else if (state.board) showBoardMenu();
+});
+
 // ---------- Вход и выход ----------
 
 const loginForm = $('#loginForm');
@@ -472,10 +634,15 @@ function onSignedIn(user) {
   document.body.classList.remove('is-auth');
   $('#logoutButton').title = `Вы вошли как ${user.email}`;
   $('#loginPassword').value = '';
+  state.activeBoardId = storageGet(activeBoardKey()) || null;
 
   const cached = storageGet(cacheKey());
   if (cached) {
-    try { setBoard(JSON.parse(cached)); } catch { /* испорченный кэш — дождёмся облака */ }
+    try {
+      const board = JSON.parse(cached);
+      // Кэш от версии без досок не подходит — дождёмся облака.
+      if (Array.isArray(board.boards) && board.boardId === (state.activeBoardId || board.boardId)) setBoard(board);
+    } catch { /* испорченный кэш — дождёмся облака */ }
   }
   subscribe();
   scheduleReload(0);
@@ -489,10 +656,13 @@ function onSignedOut() {
   state.openCardId = null;
   if (modal.open) modal.close();
   Object.assign(state, {
-    user: null, board: null, queuedBoard: null, online: null,
+    user: null, board: null, activeBoardId: null, queuedBoard: null, online: null,
     composer: null, addingColumn: null, renaming: null, openCardId: null,
   });
+  closeColumnMenu();
   boardEl.replaceChildren();
+  $('#boardName').textContent = 'Доска';
+  document.title = 'Trello Lite';
   $('#sync').dataset.state = 'connecting';
   $('.sync-text').textContent = 'Подключение…';
   $('#offlineBanner').hidden = true;
@@ -547,6 +717,7 @@ function startAuth() {
 
 function render() {
   if (!state.board) return;
+  renderBoardSwitcher();
   state.rendering = true;
 
   // Запоминаем прокрутку и фокус, чтобы перерисовка была незаметной.
@@ -806,7 +977,7 @@ function showColumnMenu(button, columnId) {
 }
 
 document.addEventListener('pointerdown', (e) => {
-  if (openMenu && !openMenu.contains(e.target) && !e.target.closest('[data-action="column-menu"]')) closeColumnMenu();
+  if (openMenu && !openMenu.contains(e.target) && !e.target.closest('[data-action="column-menu"], #boardButton')) closeColumnMenu();
 });
 
 // ---------- Клики по доске ----------

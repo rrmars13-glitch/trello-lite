@@ -236,6 +236,49 @@ button { cursor: pointer; }
 }
 .column-menu button:hover { background: var(--card-hover); }
 .column-menu .danger { color: var(--danger); }
+.column-menu hr { margin: 6px 4px; border: none; border-top: 1px solid var(--border); }
+
+/* ---------- Выбор доски ---------- */
+
+.board-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 260px;
+  padding: 5px 10px;
+  border: none;
+  border-radius: 8px;
+  background: var(--placeholder);
+  font-weight: 600;
+}
+.board-button:hover { background: var(--accent-soft); color: var(--accent); }
+.board-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.board-caret { font-size: 11px; color: var(--muted); }
+
+.board-menu { min-width: 240px; max-width: 320px; }
+.board-menu .menu-title {
+  padding: 6px 10px 4px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 600;
+}
+.board-menu button { display: flex; align-items: center; gap: 6px; overflow-wrap: anywhere; }
+.board-menu button.is-current { font-weight: 600; background: var(--accent-soft); color: var(--accent); }
+.board-menu .menu-check { flex: none; width: 14px; }
+.board-menu .menu-input {
+  width: calc(100% - 12px);
+  margin: 4px 6px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--card);
+  outline: none;
+}
+.board-menu .menu-input:focus { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+.board-menu .composer-row { padding: 0 6px 4px; margin-top: 6px; }
+.board-menu .composer-row button { width: auto; }
+.board-menu .composer-row .primary-btn { padding: 6px 12px; background: var(--accent); color: #fff; }
+.board-menu .composer-row .primary-btn:hover { background: var(--accent); filter: brightness(1.08); }
 
 .card-list {
   flex: 1;
