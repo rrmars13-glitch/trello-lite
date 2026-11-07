@@ -1,0 +1,32 @@
+# Не даёт бесплатному проекту Supabase уснуть: раз в 3 дня делает запрос к базе.
+# Supabase ставит проект на паузу примерно после недели без обращений.
+# Адрес и публичный ключ берутся из config.js. Без входа база отдаёт пустой список,
+# поэтому ваши данные этот запрос не видит.
+# Запустить вручную: GitHub → вкладка Actions → «Будильник Supabase» → Run workflow.
+
+name: Будильник Supabase
+
+on:
+  schedule:
+    - cron: '17 6 */3 * *' # в 06:17 UTC каждые 3 дня
+  workflow_dispatch:
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Запрос к базе
+        run: |
+          URL=$(grep -oE "https://[a-z0-9]+\.supabase\.co" config.js)
+          KEY=$(grep -oE "sb_publishable_[A-Za-z0-9_-]+" config.js)
+          for attempt in 1 2 3; do
+            code=$(curl -sS -m 30 -o /dev/null -w "%{http_code}" \
+              "$URL/rest/v1/boards?select=id&limit=1" -H "apikey: $KEY" || true)
+            echo "Попытка $attempt: HTTP $code"
+            [ "$code" = "200" ] && exit 0
+            sleep 60
+          done
+          echo "::error::Supabase не отвечает — возможно, проект уже на паузе. Откройте supabase.com и нажмите Restore project."
+          exit 1
